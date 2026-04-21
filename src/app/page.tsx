@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Lightbulb, Send, ChevronRight } from "lucide-react";
+import { Lightbulb, Send, ChevronRight, ChevronDown } from "lucide-react";
 import { Header } from "@/components/layout/Header";
 import { LeftNav } from "@/components/layout/LeftNav";
 import { Sidebar, type TraceRow } from "@/components/layout/Sidebar";
@@ -41,6 +41,11 @@ interface TraceDetail {
 interface ClaudeSuggestion {
   actions: string[];
   reasoning: string;
+}
+
+interface ChatMessage {
+  role: "user" | "assistant";
+  text: string;
 }
 
 // ── Static data ────────────────────────────────────────────────────────────
@@ -568,6 +573,11 @@ export default function Home() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [evidenceExpanded, setEvidenceExpanded] = useState(true);
   const [chatInput, setChatInput] = useState("");
+  const [whyExpanded, setWhyExpanded] = useState(false);
+  const [askExpanded, setAskExpanded] = useState(true);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatLoading, setChatLoading] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const [suggestion, setSuggestion] = useState<ClaudeSuggestion | null>(null);
   const [suggestionLoading, setSuggestionLoading] = useState(false);
   const suggestionCache = useRef<Map<string, ClaudeSuggestion>>(new Map());
@@ -615,6 +625,43 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading]);
 
+  // Auto-scroll messages to bottom when new ones arrive
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages]);
+
+  async function sendChatMessage() {
+    const text = chatInput.trim();
+    if (!text || chatLoading) return;
+    setChatInput("");
+    setChatMessages((prev) => [...prev, { role: "user", text }]);
+    setChatLoading(true);
+    try {
+      const res = await fetch("/api/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          traceName: trace.id,
+          severity: trace.severity,
+          failureType: trace.title,
+          confidenceScore: trace.confidenceValue,
+          description: trace.description,
+          question: text,
+        }),
+      });
+      const data = await res.json() as { answer?: string; error?: string };
+      if (!res.ok || !data.answer) {
+        throw new Error(data.error ?? "Empty response");
+      }
+      setChatMessages((prev) => [...prev, { role: "assistant", text: data.answer! }]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to get a response.";
+      setChatMessages((prev) => [...prev, { role: "assistant", text: msg }]);
+    } finally {
+      setChatLoading(false);
+    }
+  }
+
   const resolvedId = selectedId ?? liveDetails[0]?.id ?? TRACES[0].id;
   const trace = liveDetails.find((t) => t.id === resolvedId) ?? liveDetails[0] ?? TRACES[0];
   const risk = riskTokens[trace.severity];
@@ -629,7 +676,10 @@ export default function Home() {
 
   function handleTraceSelect(id: string) {
     setSelectedId(id);
-    setEvidenceExpanded(false);
+    setEvidenceExpanded(true);
+    setWhyExpanded(false);
+    setChatMessages([]);
+    setChatInput("");
     const detail = liveDetails.find((t) => t.id === id) ?? liveDetails[0];
     if (detail) fetchSuggestion(detail);
   }
@@ -778,8 +828,10 @@ export default function Home() {
             </main>
 
             {/* ── Right panel ── */}
-            <aside className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-l border-border bg-gray-50">
-              <div className="flex flex-col gap-5 p-5">
+            <aside className="flex w-[300px] shrink-0 flex-col border-l border-border bg-gray-50">
+
+              {/* Scrollable content */}
+              <div className="flex flex-1 flex-col gap-5 overflow-y-auto p-5">
 
                 {/* SUGGESTED ACTIONS */}
                 <section>
@@ -814,7 +866,18 @@ export default function Home() {
                       <div className="h-3 w-4/6 animate-pulse rounded bg-amber-100" />
                     </div>
                   ) : (
-                    <p className="text-sm leading-relaxed text-gray-700">{whyText}</p>
+                    <>
+                      <p className={cn("text-xs leading-relaxed text-gray-700", !whyExpanded && "line-clamp-2")}>
+                        {whyText}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setWhyExpanded((v) => !v)}
+                        className="mt-1.5 text-[11px] font-medium text-amber-600 hover:text-amber-700"
+                      >
+                        {whyExpanded ? "Show less" : "Show more"}
+                      </button>
+                    </>
                   )}
                 </div>
 
@@ -837,33 +900,80 @@ export default function Home() {
                   </div>
                 </section>
 
-                {/* Ask about this failure */}
-                <div className="mt-auto rounded-xl border border-border bg-white shadow-sm" style={{ borderTopWidth: "3px", borderTopColor: "#3b82f6" }}>
-                  <div className="px-4 pb-4 pt-4">
-                    <p className="mb-3 text-xs font-bold text-gray-800">
-                      Ask about this failure
-                    </p>
-                    <textarea
-                      value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
-                      placeholder={`e.g. Why did ${trace.id} fail with ${trace.title}?`}
-                      rows={4}
-                      className="w-full resize-none rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-xs text-gray-700 placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
-                      style={{ minHeight: "80px" }}
-                    />
-                    <div className="mt-2 flex justify-end">
-                      <button
-                        type="button"
-                        className="flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700"
-                      >
-                        <Send className="size-3" />
-                        Ask
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
               </div>
+
+              {/* Ask — pinned to bottom */}
+              <div className="shrink-0 border-t border-border bg-gray-50 pb-3 pt-2">
+                <div className="mx-3 rounded-lg border border-t-2 border-gray-200 border-t-blue-500 bg-white p-4 shadow-sm">
+                  <div className="mb-3 flex items-center justify-between">
+                    <p className="text-sm font-semibold text-gray-900">Ask about this failure</p>
+                    <button
+                      type="button"
+                      onClick={() => setAskExpanded((v) => !v)}
+                      className="flex size-6 items-center justify-center rounded text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+                    >
+                      <ChevronDown className={cn("size-4 transition-transform", askExpanded ? "rotate-0" : "-rotate-90")} />
+                    </button>
+                  </div>
+
+                  {/* Collapsible body */}
+                  {askExpanded && (
+                    <>
+                      {/* Conversation history */}
+                      {chatMessages.length > 0 && (
+                        <div className="mb-3 flex max-h-48 flex-col gap-2 overflow-y-auto">
+                          {chatMessages.map((msg, i) => (
+                            <div
+                              key={i}
+                              className={cn(
+                                "rounded-lg px-3 py-2 text-sm",
+                                msg.role === "user"
+                                  ? "self-end bg-blue-50 text-blue-900"
+                                  : "self-start bg-gray-100 text-gray-700",
+                              )}
+                            >
+                              {msg.text}
+                            </div>
+                          ))}
+                          {chatLoading && (
+                            <div className="self-start rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-400">
+                              Thinking…
+                            </div>
+                          )}
+                          <div ref={messagesEndRef} />
+                        </div>
+                      )}
+
+                      {/* Input */}
+                      <textarea
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.shiftKey) {
+                            e.preventDefault();
+                            sendChatMessage();
+                          }
+                        }}
+                        placeholder={`e.g. Why did ${trace.id} fail with ${trace.title}?`}
+                        className="w-full resize-none rounded-md border border-gray-200 p-3 text-sm text-gray-700 placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                        style={{ minHeight: "80px" }}
+                      />
+                      <div className="mt-2 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={sendChatMessage}
+                          disabled={chatLoading || !chatInput.trim()}
+                          className="flex items-center gap-1 rounded-md bg-blue-600 px-4 py-2 text-sm text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+                        >
+                          <Send className="size-3.5" />
+                          Ask
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+
             </aside>
 
           </div>
