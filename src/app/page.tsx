@@ -920,9 +920,9 @@ export default function Home() {
 
             {/* ── Right panel — hidden on mobile unless detailsOpen ── */}
             <aside className={cn(
-              "w-[300px] shrink-0 flex-col border-l border-border bg-gray-50",
+              "w-[360px] shrink-0 flex-col border-l border-border bg-gray-50",
               detailsOpen
-                ? "fixed inset-0 z-40 flex w-full md:relative md:inset-auto md:z-auto md:w-[300px]"
+                ? "fixed inset-0 z-40 flex w-full md:relative md:inset-auto md:z-auto md:w-[360px]"
                 : "hidden md:flex",
             )}>
 
