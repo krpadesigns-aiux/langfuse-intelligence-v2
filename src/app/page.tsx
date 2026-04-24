@@ -482,6 +482,7 @@ function apiTraceToRow(trace: Trace): TraceRow {
     confidence,
     confidenceValue,
     status: statusFromTags(trace.tags),
+    timestamp: trace.timestamp,
   };
 }
 
@@ -582,6 +583,19 @@ export default function Home() {
   const [suggestionLoading, setSuggestionLoading] = useState(false);
   const suggestionCache = useRef<Map<string, ClaudeSuggestion>>(new Map());
 
+  // Fix 1: feedback toast
+  const [toast, setToast] = useState<string | null>(null);
+
+  // Fix 3: real observations
+  const [detailSteps, setDetailSteps] = useState<PipelineStep[]>([]);
+  const [stepsLoading, setStepsLoading] = useState(false);
+  // Map resolved static id → real Langfuse UUID for per-trace API calls
+  const realIdMap = useRef<Map<string, string>>(new Map());
+
+  // Fix 5: mobile drawer
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+
   const fetchSuggestion = useCallback(async (detail: TraceDetail) => {
     const cached = suggestionCache.current.get(detail.id);
     if (cached) {
@@ -614,6 +628,36 @@ export default function Home() {
     }
   }, []);
 
+  // Fix 1: send thumbs feedback to Langfuse via /api/feedback
+  async function handleFeedback(type: "up" | "down") {
+    const langfuseId = realIdMap.current.get(resolvedId) ?? resolvedId;
+    try {
+      await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ traceId: langfuseId, value: type === "up" ? 1 : -1 }),
+      });
+    } catch { /* best-effort */ }
+    setToast("Feedback recorded ✓");
+    setTimeout(() => setToast(null), 2000);
+  }
+
+  // Fix 3: load real observations for selected trace
+  const loadSteps = useCallback(async (staticId: string) => {
+    const langfuseId = realIdMap.current.get(staticId);
+    if (!langfuseId) return;
+    setStepsLoading(true);
+    setDetailSteps([]);
+    try {
+      const res = await fetch(`/api/traces/${langfuseId}`);
+      const data = await res.json() as { steps?: PipelineStep[]; error?: string };
+      if (Array.isArray(data.steps) && data.steps.length > 0) {
+        setDetailSteps(data.steps);
+      }
+    } catch { /* fall back to static steps */ }
+    finally { setStepsLoading(false); }
+  }, []);
+
   // Set initial selection once data loads and fetch first suggestion
   useEffect(() => {
     if (!loading && selectedId === null) {
@@ -621,9 +665,19 @@ export default function Home() {
       setSelectedId(firstId);
       const firstDetail = liveDetails.find((t) => t.id === firstId) ?? liveDetails[0];
       if (firstDetail) fetchSuggestion(firstDetail);
+      loadSteps(firstId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading]);
+
+  // Build map from resolved static id → real Langfuse UUID when API data arrives
+  useEffect(() => {
+    if (!apiTraces) return;
+    apiTraces.forEach((t) => {
+      const staticId = resolveStaticId(t);
+      realIdMap.current.set(staticId, t.id);
+    });
+  }, [apiTraces]);
 
   // Auto-scroll messages to bottom when new ones arrive
   useEffect(() => {
@@ -678,16 +732,18 @@ export default function Home() {
     setSelectedId(id);
     setEvidenceExpanded(true);
     setWhyExpanded(false);
+    setDetailsOpen(false);
     setChatMessages([]);
     setChatInput("");
     const detail = liveDetails.find((t) => t.id === id) ?? liveDetails[0];
     if (detail) fetchSuggestion(detail);
+    loadSteps(id);
   }
 
   if (loading) {
     return (
       <div className="flex flex-1 flex-col overflow-hidden">
-        <Header />
+        <Header onHamburgerClick={() => setDrawerOpen(true)} />
         <div className="flex flex-1 items-center justify-center text-sm text-gray-400">
           Loading traces…
         </div>
@@ -702,11 +758,35 @@ export default function Home() {
           Could not load live data ({error}) — showing sample traces.
         </div>
       )}
-      <Header />
+      <Header onHamburgerClick={() => setDrawerOpen(true)} />
 
       <div className="flex flex-1 overflow-hidden">
-        <LeftNav />
-        <Sidebar activeTraceId={resolvedId} onTraceSelect={handleTraceSelect} traces={sidebarRows} />
+        <LeftNav className="hidden md:flex" />
+
+        {/* Sidebar — desktop only */}
+        <Sidebar
+          activeTraceId={resolvedId}
+          onTraceSelect={handleTraceSelect}
+          traces={sidebarRows}
+          className="hidden md:flex"
+        />
+
+        {/* Mobile drawer */}
+        {drawerOpen && (
+          <>
+            <div
+              className="fixed inset-0 z-30 bg-black/50 md:hidden"
+              onClick={() => setDrawerOpen(false)}
+            />
+            <Sidebar
+              activeTraceId={resolvedId}
+              onTraceSelect={handleTraceSelect}
+              traces={sidebarRows}
+              isDrawer
+              onClose={() => setDrawerOpen(false)}
+            />
+          </>
+        )}
 
         {/* ── Content area: unified header + two-column body ── */}
         <div className="flex flex-1 flex-col overflow-hidden">
@@ -759,51 +839,60 @@ export default function Home() {
                   <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.08em] text-gray-400">
                     Trace Timeline
                   </p>
-                  {trace.steps.length === 0 ? (
-                    <div className="flex items-center justify-center rounded-xl border border-border bg-white px-5 py-8">
-                      <p className="text-sm text-gray-400">No timeline data available</p>
+                  {stepsLoading ? (
+                    <div className="flex flex-col gap-2 rounded-xl border border-border bg-white px-5 py-4">
+                      {[80, 60, 90, 70].map((w, i) => (
+                        <div key={i} className="h-5 animate-pulse rounded bg-gray-100" style={{ width: `${w}%` }} />
+                      ))}
                     </div>
-                  ) : (
-                    <ol className="overflow-hidden rounded-xl border border-border bg-white px-5 py-4">
-                      {trace.steps.map((step, i) => {
-                        const isLast = i === trace.steps.length - 1;
-                        return (
-                          <li key={i} className="flex items-start gap-3">
-                            <div className="flex shrink-0 flex-col items-center self-stretch">
-                              <span
-                                className={cn(
-                                  "mt-0.5 size-2.5 rounded-full ring-2 ring-white",
-                                  STEP_DOT[step.status],
-                                )}
-                              />
-                              {!isLast && <span className="mt-1 w-px flex-1 bg-gray-200" />}
-                            </div>
-                            <div
-                              className={cn(
-                                "flex min-w-0 flex-1 items-baseline justify-between gap-4",
-                                !isLast ? "pb-5" : "pb-0",
-                              )}
-                            >
-                              <span className="text-sm leading-tight text-gray-800">
-                                {step.name}
-                              </span>
-                              <div className="flex shrink-0 items-center gap-3">
-                                <span className="text-xs text-gray-400">{step.latency}ms</span>
-                                <span
+                  ) : (() => {
+                    const steps = detailSteps.length > 0 ? detailSteps : trace.steps;
+                    return steps.length === 0 ? (
+                      <div className="flex items-center justify-center rounded-xl border border-border bg-white px-5 py-8">
+                        <p className="text-sm text-gray-400">No timeline data available</p>
+                      </div>
+                    ) : (
+                      <ol className="overflow-hidden rounded-xl border border-border bg-white px-5 py-4">
+                          {steps.map((step, i) => {
+                            const isLast = i === steps.length - 1;
+                            return (
+                              <li key={i} className="flex items-start gap-3">
+                                <div className="flex shrink-0 flex-col items-center self-stretch">
+                                  <span
+                                    className={cn(
+                                      "mt-0.5 size-2.5 rounded-full ring-2 ring-white",
+                                      STEP_DOT[step.status],
+                                    )}
+                                  />
+                                  {!isLast && <span className="mt-1 w-px flex-1 bg-gray-200" />}
+                                </div>
+                                <div
                                   className={cn(
-                                    "w-14 text-right text-[11px] font-semibold uppercase tracking-wide",
-                                    STEP_LABEL[step.status],
+                                    "flex min-w-0 flex-1 items-baseline justify-between gap-4",
+                                    !isLast ? "pb-5" : "pb-0",
                                   )}
                                 >
-                                  {step.status}
-                                </span>
-                              </div>
-                            </div>
-                          </li>
-                        );
-                      })}
-                    </ol>
-                  )}
+                                  <span className="text-sm leading-tight text-gray-800">
+                                    {step.name}
+                                  </span>
+                                  <div className="flex shrink-0 items-center gap-3">
+                                    <span className="text-xs text-gray-400">{step.latency}ms</span>
+                                    <span
+                                      className={cn(
+                                        "w-14 text-right text-[11px] font-semibold uppercase tracking-wide",
+                                        STEP_LABEL[step.status],
+                                      )}
+                                    >
+                                      {step.status}
+                                    </span>
+                                  </div>
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ol>
+                    );
+                  })()}
                 </section>
 
                 {/* ── ROOT CAUSE DETECTED ── */}
@@ -812,6 +901,8 @@ export default function Home() {
                     severity={trace.severity}
                     title={trace.title}
                     description={trace.description}
+                    onThumbsUp={() => handleFeedback("up")}
+                    onThumbsDown={() => handleFeedback("down")}
                   />
                 </section>
 
@@ -827,8 +918,27 @@ export default function Home() {
               </div>
             </main>
 
-            {/* ── Right panel ── */}
-            <aside className="flex w-[300px] shrink-0 flex-col border-l border-border bg-gray-50">
+            {/* ── Right panel — hidden on mobile unless detailsOpen ── */}
+            <aside className={cn(
+              "w-[300px] shrink-0 flex-col border-l border-border bg-gray-50",
+              detailsOpen
+                ? "fixed inset-0 z-40 flex w-full md:relative md:inset-auto md:z-auto md:w-[300px]"
+                : "hidden md:flex",
+            )}>
+
+              {/* Mobile close bar */}
+              {detailsOpen && (
+                <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3 md:hidden">
+                  <span className="text-sm font-semibold text-gray-900">Details</span>
+                  <button
+                    type="button"
+                    onClick={() => setDetailsOpen(false)}
+                    className="flex size-7 items-center justify-center rounded-md text-gray-400 hover:bg-gray-100"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
 
               {/* Scrollable content */}
               <div className="flex flex-1 flex-col gap-5 overflow-y-auto p-5">
@@ -980,6 +1090,24 @@ export default function Home() {
         </div>
 
       </div>
+
+      {/* Mobile "Details" floating button */}
+      {!detailsOpen && (
+        <button
+          type="button"
+          onClick={() => setDetailsOpen(true)}
+          className="fixed bottom-6 right-6 z-20 rounded-full bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg transition-colors hover:bg-blue-700 md:hidden"
+        >
+          Details
+        </button>
+      )}
+
+      {/* Fix 1: Feedback toast */}
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-50 rounded-lg bg-green-700 px-4 py-2.5 text-sm font-medium text-white shadow-lg">
+          {toast}
+        </div>
+      )}
     </div>
   );
 }

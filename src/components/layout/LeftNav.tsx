@@ -15,6 +15,7 @@ type NavId = (typeof TOP_ITEMS)[number]["id"] | "settings";
 interface LeftNavProps {
   activeId?: NavId;
   onNavigate?: (id: NavId) => void;
+  className?: string;
 }
 
 function NavButton({
@@ -49,11 +50,11 @@ function NavButton({
   );
 }
 
-export function LeftNav({ activeId = "traces", onNavigate }: LeftNavProps) {
+export function LeftNav({ activeId = "traces", onNavigate, className }: LeftNavProps) {
   return (
     <nav
       aria-label="Primary navigation"
-      className="flex w-[68px] shrink-0 flex-col items-center gap-0.5 border-r border-border bg-white px-2 py-2"
+      className={cn("flex w-[68px] shrink-0 flex-col items-center gap-0.5 border-r border-border bg-white px-2 py-2", className)}
     >
       {TOP_ITEMS.map(({ id, icon, label }) => (
         <NavButton

@@ -102,6 +102,27 @@ export async function getTraces(params: GetTracesParams = {}): Promise<TracesRes
 }
 
 
+export interface Observation {
+  id: string;
+  name: string | null;
+  startTime: string;
+  endTime: string | null;
+  level: 'DEFAULT' | 'DEBUG' | 'WARNING' | 'ERROR';
+}
+
+export interface TraceDetailResponse {
+  id: string;
+  observations: Observation[];
+}
+
+export async function getTraceById(id: string): Promise<TraceDetailResponse> {
+  const res = await fetch(`${BASE_URL}/api/public/traces/${id}`, {
+    headers: { Authorization: authHeader(), 'Content-Type': 'application/json' },
+  });
+  if (!res.ok) throw new Error(`getTraceById failed: ${res.status} ${res.statusText}`);
+  return res.json() as Promise<TraceDetailResponse>;
+}
+
 export async function createScore(body: CreateScoreBody): Promise<CreateScoreResponse> {
   const res = await fetch(`${BASE_URL}/api/public/scores`, {
     method: 'POST',
